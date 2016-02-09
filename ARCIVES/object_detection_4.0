@@ -1,0 +1,457 @@
+/*
+Name       : Ravi Kant
+e-mail     : rkant@usc.edu
+Submission : Jan 29, 2016
+
+ */
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/nonfree/features2d.hpp>
+#include "opencv2/calib3d/calib3d.hpp"
+
+#include <iostream>
+#include <string>
+#include <fstream>
+#include <time.h>
+#include <dirent.h>
+using namespace cv;
+using namespace std;
+
+
+int main()
+{
+
+	// Read Inventory-----------------------------------------------------------
+
+	DIR *dir;
+	struct dirent *ent;
+
+	vector<string> objectNameList;
+	if ((dir = opendir ("/home/ravi/workspace/MyProjects/objectScanner/inventory")) != NULL) {
+		/* print all the files and directories within directory */
+		while ((ent = readdir (dir)) != NULL) {
+			objectNameList.push_back(ent->d_name);
+		}
+		closedir (dir);
+	} else {
+		/* could not open directory */
+		perror ("");
+		return EXIT_FAILURE;
+	}
+
+	// Read catalog---------------------------------------------------------------
+
+	ifstream fin;
+	fin.open("catalog.txt");
+	vector<string> catalog;
+	if(fin){
+		string temp;
+		while(getline(fin,temp)){
+			catalog.push_back(temp);
+		}
+	}
+	else
+	{
+		cout<<"Unable to open dataDesciption.txt\n";
+		exit(1);
+	}
+
+	fin.close();
+
+	// ------------------------------------------------------------------------------
+	// Extract SIFT features of all objects and store them in sift_refrence_library
+
+	vector<vector<KeyPoint> > sift_keypoint_library;
+	vector<Mat> sift_descriptors_library;
+	Mat sift_descriptors_bank;
+
+	Mat temp_descriptors;
+	vector<KeyPoint> temp_keypoints;
+	SiftFeatureDetector detector;
+	SiftDescriptorExtractor extractor;
+	Mat image;
+
+	for(int i = 0; i < objectNameList.size(); i++) {
+		string object_path = objectNameList[i];
+		object_path = "/home/ravi/workspace/MyProjects/objectScanner/inventory/" + object_path;
+
+		image = imread(object_path);
+		detector.detect(image,temp_keypoints);
+		sift_keypoint_library.push_back(temp_keypoints);
+
+		extractor.compute(image, temp_keypoints, temp_descriptors);
+		sift_descriptors_library.push_back(temp_descriptors);
+		sift_descriptors_bank.push_back(temp_descriptors);
+	}
+
+	// create bag of words
+	BOWKMeansTrainer bowtrainer(1000); //num clusters
+	bowtrainer.add(sift_descriptors_bank);
+	Mat vocabulary = bowtrainer.cluster();
+
+
+
+	//
+	VideoCapture cap("mob120.mp4");
+
+	if(!cap.isOpened())  // check if we succeeded
+		return -1;
+	VideoWriter outcap;
+	outcap.open("resultVideo.avi", CV_FOURCC('D','I','V','X'), cap.get(CV_CAP_PROP_FPS), Size(0.3*cap.get(CV_CAP_PROP_FRAME_WIDTH),0.3*cap.get(CV_CAP_PROP_FRAME_HEIGHT)));
+
+	//VideoCapture OVcap("test.mkv");
+	//int OVnFrames = OVcap.get(CV_CAP_PROP_FRAME_COUNT);
+	BFMatcher matcher;
+
+	bool flag = false;
+	double area;
+	clock_t tStart = clock();
+	int nFrames = cap.get(CV_CAP_PROP_FRAME_COUNT);
+	float fps = cap.get(CV_CAP_PROP_FPS);
+	cout<<"FPS"<<fps;
+	//exit(0);
+	Mat homography,oldHomography;
+	vector<Point2f> oldCorners,destinationCorners(7);
+
+	//ofstream fout;
+	//fout.open("angles.txt");
+	float data[9]= {1.0495656184032528e+03, 0.0, 6.3950000000000000e+02,
+			0.0, 1.0495656184032528e+03, 3.5950000000000000e+02,
+			0.0, 0.0, 1.0};
+	Mat cameraMatrix(3,3,CV_32F,data);
+
+
+	double dCoeff[5] = {0.058055443802597889, -0.75762481381245350, 0.0, 0.0,1.2767832543908491};
+	vector<double> distCoeffs(&dCoeff[0], &dCoeff[0]+5);
+
+	Mat rTemp,tTemp, rVec, tVec;
+	Mat_<float> rotMat(3,3);
+	vector<Point3f> objectPoints(8);
+	objectPoints[0] = Point3f(-6.5,3.5,0);
+	objectPoints[1] = Point3f(6.5,3.5,0);
+	objectPoints[2] = Point3f(6.5,-3.5,0);
+	objectPoints[3] = Point3f(-6.5,-3.5,0);
+	objectPoints[4] = Point3f(0,0,0);
+	objectPoints[5] = Point3f(6.5,0,0);
+	objectPoints[6] = Point3f(0,3.5,0);
+
+	vector<Point3f> housePoints(6);
+	housePoints[0] = Point3f(-6.5,3.5,5.0);
+	housePoints[1] = Point3f(6.5,3.5,5.0);
+	housePoints[2] = Point3f(6.5,-3.5,5.0);
+	housePoints[3] =  Point3f(-6.5,-3.5,5.0);
+	housePoints[4] =  Point3f(-6.5,0.0,8.0);
+	housePoints[5] =  Point3f(6.5,0.0,8.0);
+
+	vector<Point3f> grassPoints(4);
+	grassPoints[0] = Point3f(-10.0,10,0.0);//Point3f(-6.5,7.5,0.0);
+	grassPoints[1] = Point3f(10.0,10,0.0);// Point3f(9.0,7.5,0.0);
+	grassPoints[2] = Point3f(10.0,-10,0.0);
+	grassPoints[3] = Point3f(-10.0,-10,0.0);
+
+
+	vector<Point3f>skyPoints(4);
+	skyPoints[0] = Point3f(-6.5,-3.5,20.0);
+	skyPoints[1] = Point3f(9,-3.5,20.0);
+	skyPoints[2] = Point3f(9,-3.5,0.0);
+	skyPoints[3] = Point3f(-6.5,-3.5,0.0);
+
+
+	Mat nrml = Mat(objectPoints[5]).cross(Mat(objectPoints[6])) * (5/(norm(objectPoints[5])*norm(objectPoints[6])));
+
+	objectPoints[7] = Point3f(nrml.at<float>(0,0),nrml.at<float>(1,0),nrml.at<float>(2,0));
+	float daTA[4] = {nrml.at<float>(0,0), nrml.at<float>(1,0), nrml.at<float>(2,0), 1};
+	Mat nrML(4,1,CV_32F,daTA);
+	vector<Point3f> objectPoints_correspondences(&objectPoints[0],&objectPoints[7]);
+
+	Mat RT,imagePointsRP,housePointsRP,grassPointsRP,skyPointsRP;
+
+	vector<Point2f> refCorners(7);
+	refCorners[0] = Point(0,0);
+	refCorners[1] = Point(refImg.cols,0);
+	refCorners[2] = Point(refImg.cols,refImg.rows);
+	refCorners[3] = Point(0,refImg.rows);
+	refCorners[4] = Point(0.5 * refImg.cols, 0.5 * refImg.rows);
+	refCorners[5] = Point(refImg.cols, 0.5 * refImg.rows);
+	refCorners[6] = Point(0.5 * refImg.cols, 0);
+	Mat sceneImg1,sceneImg2,sceneImg;
+	int OVcount = 0;
+	for(int h = 0; h < nFrames; h++)
+	{
+		cout<<h;
+		// get ith frame
+
+		cap>>sceneImg1;
+
+		// resizing to reduce computation time
+		resize(sceneImg1, sceneImg2,Size(),0.3,0.3,CV_INTER_AREA);
+
+		cvtColor(sceneImg2,sceneImg,CV_BGR2GRAY);
+
+			namedWindow( "img", WINDOW_NORMAL );
+	    		imshow("img",sceneImg);
+	    		waitKey(0);
+
+		//detect keyPoints to in the current frame
+		detector.detect(sceneImg,sceneKeyPoints);
+
+		// extract descriptors of keypoint for matching with descriptors of refrence keypoints
+		extractor.compute(sceneImg, sceneKeyPoints, sceneKeyPointDescriptor);
+
+		// obtaining matches b/w current frame and reference image
+		vector<DMatch> matchingPairs;
+		matcher.match(refKeyPoint_descriptors, sceneKeyPointDescriptor, matchingPairs);
+
+		// Ratio test: the distance measure of a match is the distance b/w the the query and
+		//             and the test vector(descriptos of keypoint). So the more identical the
+		//             the vectors are i.e the better the match, the smaller will be the
+		//             distance value. Here we take the best 2 matches, the match at index 0 being
+		//             best and at 1 being 2nd best. If the ratio of these distance is large then
+		//             we accept the match else we reject it on grounds that, this paticular query
+		// 			   vector is similar to many points in the scene image, and we can not be sure
+		//             which one it exactly matches.
+		vector<vector<DMatch> > matches;
+		vector<DMatch> goodMatches;
+		matcher.knnMatch(refKeyPoint_descriptors, sceneKeyPointDescriptor,matches,2);
+		vector<Point2f> matched_objectKeyPoint, matched_sceneKeyPoint;
+		for(int i = 0; i < matches.size(); i++) {
+			if(matches[i][0].distance < 0.6 * matches[i][1].distance){
+				goodMatches.push_back(matches[i][0]);
+				matched_objectKeyPoint.push_back(refKeyPoints[matches[i][0].queryIdx].pt);
+				matched_sceneKeyPoint.push_back(sceneKeyPoints[matches[i][0].trainIdx].pt);
+			}
+		}
+
+				Mat matchedImage;
+		drawMatches(refImg,refKeyPoints,sceneImg,sceneKeyPoints,goodMatches,matchedImage,Scalar::all(-1), Scalar::all(-1),
+				vector<char>(), DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS );
+		namedWindow("Result1", WINDOW_NORMAL);
+		imshow("Result1",matchedImage);
+		waitKey(0);
+		// Only if we have more than 20 good matches we calculate the homography else
+		// only a few matches often produce bad results, so we ignore cases with less than
+		// 20 matches
+
+		if(matched_objectKeyPoint.size() > 20){
+
+			homography = findHomography( matched_objectKeyPoint, matched_sceneKeyPoint, CV_RANSAC);
+
+			// once we have a homography we get the projections of the
+			perspectiveTransform( refCorners, destinationCorners, homography);
+
+			if(flag==false){
+				area = norm(destinationCorners[0] - destinationCorners[1]) * norm(destinationCorners[1] - destinationCorners[2]);
+			}
+			flag = true;
+			double tempArea = norm(destinationCorners[0] - destinationCorners[1]) * norm(destinationCorners[2] - destinationCorners[1]);
+
+			double dotProd1 = Mat(destinationCorners[0] - destinationCorners[1]).dot(Mat(destinationCorners[2] - destinationCorners[1]))/tempArea;
+			double dotProd2 = Mat(destinationCorners[0] - destinationCorners[3]).dot(Mat(destinationCorners[2] - destinationCorners[3]))/tempArea;
+			double dotProd3 = Mat(destinationCorners[1] - destinationCorners[0]).dot(Mat(destinationCorners[3] - destinationCorners[0]))/tempArea;
+			double dotProd4 = Mat(destinationCorners[1] - destinationCorners[2]).dot(Mat(destinationCorners[3] - destinationCorners[2]))/tempArea;
+
+
+			if((dotProd1>-0.7 && dotProd1<0.7) && (dotProd2>-0.7 && dotProd2<0.7) && (dotProd3>-0.7 && dotProd3<0.7) && (dotProd4>-0.7 && dotProd4<0.7) ) {// this program fails if 1st frame does not have the object
+
+				// estimate camera pose wrt object
+				// here we find out the camera's rotation and translation with respect to our object in
+				// scene
+				solvePnP(objectPoints_correspondences, destinationCorners, cameraMatrix, distCoeffs, rTemp, tTemp, false);
+
+				// based on the
+				projectPoints(Mat(objectPoints), rTemp, tTemp, cameraMatrix, distCoeffs, imagePointsRP);
+				projectPoints(Mat(housePoints), rTemp, tTemp, cameraMatrix, distCoeffs, housePointsRP);
+				projectPoints(Mat(grassPoints), rTemp, tTemp, cameraMatrix, distCoeffs, grassPointsRP);
+				//projectPoints(Mat(skyPoints), rTemp, tTemp, cameraMatrix, distCoeffs, skyPointsRP);
+				Mat resultImg1;
+				sceneImg2.copyTo(resultImg1);
+
+
+
+								if(OVcount < OVnFrames ){
+					Mat ovTemp;
+					OVcap >> ovTemp;
+					// OVcount = (OVcount+1)%OVnFrames;
+					OVcount++;
+					Mat zeroImg = Mat::zeros(resultImg1.size(),CV_32F);
+					Mat mask(resultImg1.rows, resultImg1.cols, CV_8UC1, cv::Scalar(0));
+					Mat M;
+					resize(ovTemp,M,resultImg1.size());
+
+					fillConvexPoly(mask,pts,Scalar(255,255,255),8,0);
+					imshow("m",mask);
+					waitKey(0);
+					M.copyTo(zeroImg,mask);
+					imshow("f",zeroImg);
+					waitKey(0);
+				}
+
+				// addWeighted( resultImg1, 0.5, src2, beta, 0.0, dst);
+
+				int D[8] = {destinationCorners[3].x,destinationCorners[3].y,
+						housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1),
+						housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,0),
+						destinationCorners[2].x,destinationCorners[2].y};
+				Mat T(4,2,CV_16U,D);
+				vector<Point> pts(4);
+					pts[0] = Point(destinationCorners[3].x,destinationCorners[3].y);
+				pts[1] = Point(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1));
+				pts[2] = Point(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1));
+				pts[3] = Point(destinationCorners[2].x, destinationCorners[2].y);
+				//	fillConvexPoly(resultImg1,pts,Scalar(254,217,154),8,0);
+
+				arrowedLine( resultImg1, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(5,0),imagePointsRP.at<float>(5,1)), Scalar( 255, 0, 0), 1);
+				arrowedLine( resultImg1, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(6,0),imagePointsRP.at<float>(6,1)), Scalar( 255, 0, 0), 1);
+				arrowedLine( resultImg1, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(7,0),imagePointsRP.at<float>(7,1)), Scalar( 0, 255, 0), 2);
+
+
+				namedWindow("Corner-perspective,axis-projection", WINDOW_NORMAL);
+				imshow("Corner-perspective,axis-projection",resultImg1);
+				waitKey(1);
+
+				Mat resultImg2;
+				sceneImg2.copyTo(resultImg2);
+
+				line( resultImg2, Point2f(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1)), Point2f(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1)), Scalar( 255, 0, 0), 1);
+				line( resultImg2, Point2f(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1)), Point2f(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1)), Scalar( 255, 0, 0), 1);
+				line( resultImg2, Point2f(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1)), Point2f(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1)), Scalar( 255, 0, 0), 1);
+				line( resultImg2, Point2f(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1)), Point2f(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1)), Scalar( 255, 0, 0), 1);
+
+				arrowedLine( resultImg2, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(5,0),imagePointsRP.at<float>(5,1)), Scalar( 255, 0, 0), 2);
+				arrowedLine( resultImg2, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(6,0),imagePointsRP.at<float>(6,1)), Scalar( 0, 255, 0), 2);
+				arrowedLine( resultImg2, Point2f(imagePointsRP.at<float>(4,0),imagePointsRP.at<float>(4,1)), Point2f(imagePointsRP.at<float>(7,0),imagePointsRP.at<float>(7,1)), Scalar( 0, 0, 255), 2);
+
+
+				namedWindow("Corner-projection,axis-projection", WINDOW_NORMAL);
+				imshow("Corner-projection,axis-projection",resultImg2);
+				waitKey(1);
+
+
+				Mat resultImg;
+				sceneImg2.copyTo(resultImg);
+
+				vector<Point> pts(4);
+				pts[0] = Point(grassPointsRP.at<float>(0,0),grassPointsRP.at<float>(0,1));
+				pts[1] = Point(grassPointsRP.at<float>(1,0),grassPointsRP.at<float>(1,1));
+				pts[2] = Point(grassPointsRP.at<float>(2,0),grassPointsRP.at<float>(2,1));
+				pts[3] = Point(grassPointsRP.at<float>(3,0),grassPointsRP.at<float>(3,1));
+
+				//grass
+				//	Mat mask(resultImg.rows, resultImg.cols, CV_8UC1, cv::Scalar(0));
+				fillConvexPoly(resultImg,pts,Scalar(3, 58, 32),8,0);
+				//	Mat Grass;
+				//	resize(grass,Grass,resultImg.size());
+				//	Grass.copyTo(resultImg,mask);
+
+
+				//back wall
+				pts[0] = Point(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1));
+				pts[1] = Point(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1));
+				pts[2] = Point(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1));
+				pts[3] = Point(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1));
+				fillConvexPoly(resultImg,pts,Scalar(193,249,253),8,0);
+
+				// side wall left
+				pts[0] = Point(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1));
+				pts[1] = Point(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1));
+				pts[2] = Point(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1));
+				pts[3] = Point(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1));
+				fillConvexPoly(resultImg,pts,Scalar(176,231,235),8,0);
+
+				// side wall right
+				pts[0] = Point(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1));
+				pts[1] = Point(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1));
+				pts[2] = Point(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1));
+				pts[3] = Point(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1));
+				fillConvexPoly(resultImg,pts,Scalar(176,231,235),8,0);
+				//front wall
+				pts[0] = Point(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1));
+				pts[1] = Point(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1));
+				pts[2] = Point(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1));
+				pts[3] = Point(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1));
+
+				fillConvexPoly(resultImg,pts,Scalar(193,249,253),8,0);
+
+				//roof
+				pts[0] = Point(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1));
+				pts[1] = Point(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1));
+				pts[2] = Point(housePointsRP.at<float>(5,0),housePointsRP.at<float>(5,1));
+				pts[3] = Point(housePointsRP.at<float>(4,0),housePointsRP.at<float>(4,1));
+
+				fillConvexPoly(resultImg,pts,Scalar(80,119,154),8,0);
+				//roof
+				pts[0] = Point(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1));
+				pts[1] = Point(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1));
+				pts[2] = Point(housePointsRP.at<float>(5,0),housePointsRP.at<float>(5,1));
+				pts[3] = Point(housePointsRP.at<float>(4,0),housePointsRP.at<float>(4,1));
+
+				fillConvexPoly(resultImg,pts,Scalar(80,119,154),8,0);
+				// wire frame house
+				line( resultImg, Point(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1)), Point(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1)), Point(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1)), Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1)), Point(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1)), Point(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1)) , Scalar( 0, 0, 0), 1 );
+
+				line( resultImg, Point(imagePointsRP.at<float>(0,0),imagePointsRP.at<float>(0,1)), Point2f(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(1,0),imagePointsRP.at<float>(1,1)), Point2f(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(2,0),imagePointsRP.at<float>(2,1)), Point2f(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point(imagePointsRP.at<float>(3,0),imagePointsRP.at<float>(3,1)), Point2f(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1)) , Scalar( 0, 0, 0), 1 );
+
+				line( resultImg, Point2f(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1)), Point2f(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1)), Point2f(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1)), Point2f(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1)), Point2f(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1)) , Scalar( 0, 0, 0), 1 );
+
+
+				line( resultImg, Point2f(housePointsRP.at<float>(0,0),housePointsRP.at<float>(0,1)), Point2f(housePointsRP.at<float>(4,0),housePointsRP.at<float>(4,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(3,0),housePointsRP.at<float>(3,1)), Point2f(housePointsRP.at<float>(4,0),housePointsRP.at<float>(4,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(1,0),housePointsRP.at<float>(1,1)), Point2f(housePointsRP.at<float>(5,0),housePointsRP.at<float>(5,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(2,0),housePointsRP.at<float>(2,1)), Point2f(housePointsRP.at<float>(5,0),housePointsRP.at<float>(5,1)) , Scalar( 0, 0, 0), 1 );
+				line( resultImg, Point2f(housePointsRP.at<float>(4,0),housePointsRP.at<float>(4,1)), Point2f(housePointsRP.at<float>(5,0),housePointsRP.at<float>(5,1)) , Scalar( 0, 0, 0), 1 );
+
+				imshow("HOUSE",resultImg);
+				waitKey(1);
+
+				Mat resultImg3;//Mat::zeros(sceneImg2.size(),CV_8UC3);
+				sceneImg2.copyTo(resultImg3);
+				line( resultImg3, destinationCorners[0], destinationCorners[1] , Scalar( 255, 0, 0), 1 );
+				line( resultImg3, destinationCorners[1], destinationCorners[2] , Scalar( 255, 0, 0), 1 );
+				line( resultImg3, destinationCorners[2], destinationCorners[3] , Scalar( 255, 0, 0), 1 );
+				line( resultImg3, destinationCorners[3], destinationCorners[0] , Scalar( 255, 0, 0), 1 );
+
+				arrowedLine( resultImg3, destinationCorners[4], destinationCorners[5], Scalar( 255, 0, 0), 1);
+				arrowedLine( resultImg3, destinationCorners[4], destinationCorners[6], Scalar( 255, 0, 0), 1);
+				arrowedLine( resultImg3, destinationCorners[4], Point2f(imagePointsRP.at<float>(7,0),imagePointsRP.at<float>(7,1)), Scalar( 0, 255, 0), 2);
+
+
+				namedWindow("Corner-perspective,axis-perspectivr,normal-projection", WINDOW_NORMAL);
+				imshow("Corner-perspective,axis-perspectivr,normal-projection",resultImg3);
+				waitKey(1);
+
+				outcap<<resultImg1;
+				cout<<" wrote augmented image of "<<nFrames<<" frames\n";
+			}
+			else
+			{
+				outcap<<sceneImg1;
+				cout<<" bad homography image "<<nFrames<<" frames\n";
+			}
+
+		}
+		else
+		{
+			outcap<<sceneImg1;
+			cout<<" no matches in image "<<nFrames<<" frames\n";
+
+
+
+		}
+
+	}
+	printf("Time taken: %.2fs\n", (double)(clock() - tStart)/CLOCKS_PER_SEC);
+	cout << "Finished writing" << endl;
+*/
+
+}// end of main
